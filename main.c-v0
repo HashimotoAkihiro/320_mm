@@ -1,0 +1,579 @@
+/***************************************************************************/
+/* The 2nd ARC/CPSY/RECONF High-Performance Computer System Design Contest */
+/* 320mm Version 2014-06-06                                                */
+/***************************************************************************/
+
+/* USE_SIMD alternatives
+#define USE_SIMD        0    (before SIMD parallelization)
+#define USE_SIMD        1    (use only LQ/SQ/PINS/PEXT instructions)
+#define USE_SIMD        2    (fully use SIMD instructions) <= not yet
+*/
+#define USE_SIMD        0
+
+#include "../lib/lib.c"
+
+/**********************************************************************/
+#ifdef __ALTERA__
+volatile int *init_data = (int*)0x0c000000;
+volatile int *init_n    = (int*)0x0c03fffc;
+#define DATA_A 0x0c100000
+#define DATA_B 0x0c200000
+#define DATA_C 0x0c300000
+#else
+volatile int *init_data = (int*)0x00040000;
+volatile int *init_n    = (int*)0x0007fffc;
+#define DATA_A 0x0100000
+#define DATA_B 0x0200000
+#define DATA_C 0x0300000
+#endif
+
+/**********************************************************************/
+int main(void) {
+    
+    int n = *init_n;
+
+    mylib_display_char('m');
+    mylib_display_char('m');
+    mylib_display_char(' ');
+    mylib_display_char('n');
+    mylib_display_char('=');
+    mylib_display_dec(n);
+    mylib_display_newline();
+    
+    int *a = (int*)DATA_A;
+    int *b = (int*)DATA_B;
+    int *c = (int*)DATA_C;
+
+    int y,x,i;
+    
+    /* ----- Initialize ----- */
+#ifdef  USE_SIMD
+
+#if USE_SIMD == 0
+    int d = 0;
+    for (i = 0; i < n*n; i += 4) {
+        int v0, v1, v2, v3, v4, v5, v6, v7;
+
+        v0 = init_data[d  ];
+        v1 = init_data[d+1];
+        v2 = init_data[d+2];
+        v3 = init_data[d+3];
+        v4 = init_data[d+4];
+        v5 = init_data[d+5];
+        v6 = init_data[d+6];
+        v7 = init_data[d+7];
+
+        a[i]   = v0;
+        b[i]   = v1;
+        a[i+1] = v2;
+        b[i+1] = v3;
+        a[i+2] = v4;
+        b[i+2] = v5;
+        a[i+3] = v6;
+        b[i+3] = v7;
+
+        c[i]   = 0;
+        c[i+1] = 0;
+        c[i+2] = 0;
+        c[i+3] = 0;
+
+        d = (d + 8) % (64*1024);
+    }
+
+/* ** test code **
+    int d = 0;
+    for (i = 0; i < n*n; i += 4) {
+        a[i]   = init_data[d     % (64*1024)];
+        a[i+1] = init_data[(d+2) % (64*1024)];
+        a[i+2] = init_data[(d+4) % (64*1024)];
+        a[i+3] = init_data[(d+6) % (64*1024)];
+
+        b[i]   = init_data[(d+1) % (64*1024)];
+        b[i+1] = init_data[(d+3) % (64*1024)];
+        b[i+2] = init_data[(d+5) % (64*1024)];
+        b[i+3] = init_data[(d+7) % (64*1024)];
+
+        c[i] = 0;
+        c[i+1] = 0;
+        c[i+2] = 0;
+        c[i+3] = 0;
+
+        d += 8;
+    }
+*/
+#elif  USE_SIMD == 1
+
+    int d = 0;
+
+    /* zero clear SPR[0] */
+    asm volatile (".set   noat\n\t"
+                  "pinsw  $0,$0,$0,0\n\t"
+                  "nop\n\t"
+                  "nop\n\t"
+//                  "nop\n\t"
+                  "pinsw  $0,$0,$0,1\n\t"
+                  "nop\n\t"
+                  "nop\n\t"
+//                  "nop\n\t"
+                  "pinsw  $0,$0,$0,2\n\t"
+                  "nop\n\t"
+                  "nop\n\t"
+//                  "nop\n\t"
+                  "pinsw  $0,$0,$0,3\n\t"
+                  ".set   at");
+
+    for (i = 0; i < n*n; i += 4) {
+        int v0, v1, v2, v3, v4, v5, v6, v7;
+
+        /* load two quadwords onto SPR[1] and SPR[2] */
+        asm volatile (".set    noat\n\t"
+                      "lq      $1,(%0)\n\t"
+                      "lq      $2,16(%0)\n\t"
+                      ".set    at\n"
+                      : : "r" (&init_data[d]));
+
+        asm volatile (".set    noat\n\t"
+                      "nop\n\t"
+//                      "nop\n\t"
+                      /* read from first qword */
+                      "pextw   %0,$1,0\n\t"
+                      "pextw   %1,$1,1\n\t"
+                      "pextw   %2,$1,2\n\t"
+                      "pextw   %3,$1,3\n\t"
+                      /* read from second qword */
+                      "pextw   %4,$2,0\n\t"
+                      "pextw   %5,$2,1\n\t"
+                      "pextw   %6,$2,2\n\t"
+                      "pextw   %7,$2,3\n\t"
+                      ".set    at\n\t"
+                      : "=r" (v0), "=r" (v1), "=r" (v2), "=r" (v3),
+                        "=r" (v4), "=r" (v5), "=r" (v6), "=r" (v7) :);
+
+        asm volatile (".set    noat\n\t"
+                      "pinsw   $3,$0,%0,0\n\t"
+                      "pinsw   $4,$0,%1,0\n\t"
+                      "nop\n\t"
+//                      "nop\n\t"
+                      "pinsw   $3,$3,%2,1\n\t"
+                      "pinsw   $4,$4,%3,1\n\t"
+                      "nop\n\t"
+//                      "nop\n\t"
+                      "pinsw   $3,$3,%4,2\n\t"
+                      "pinsw   $4,$4,%5,2\n\t"
+                      "nop\n\t"
+//                      "nop\n\t"
+                      "pinsw   $3,$3,%6,3\n\t"
+                      "pinsw   $4,$4,%7,3\n\t"
+                      :
+                      : "r" (v0), "r" (v1), "r" (v2), "r" (v3),
+                        "r" (v4), "r" (v5), "r" (v6), "r" (v7) );
+
+        /* store three quadwords from SPR[3], SPR[4], SPR[0](==0) */
+        asm volatile (".set    noat\n\t"
+                      "nop\n\t"
+                      "sq      $0,(%0)\n\t"
+                      "sq      $3,(%1)\n\t"
+                      "sq      $4,(%2)\n\t"
+                      ".set    at\n"
+                      : : "r" (&c[i]), "r" (&a[i]), "r" (&b[i]));
+
+        d = (d + 8) % (64*1024);
+    }
+
+#else
+# error "illegal USE_SIMD setting"
+#endif
+
+#else   /* not-defined USE_SIMD */
+    /* original code */
+    int d = 0;
+    for(y=0; y<n; y++) {
+        for(x=0; x<n; x++) {
+            a[n*y+x] = init_data[d     % (64*1024)];
+            b[n*y+x] = init_data[(d+1) % (64*1024)];
+            c[n*y+x] = 0;
+            d +=2;
+        }
+    }
+#endif
+    
+
+    /* -----  main kernel ----- */ 
+#ifdef  USE_SIMD
+
+#if USE_SIMD == 0
+
+    static int mm[4][4];
+    for(y = 0; y < n; y += 4) {
+        for(x = 0; x < n; x += 4) {
+            int ix, iy;
+
+            /* clear temporary sub-matrix */
+            for (iy = 0; iy < 4; iy++)
+                for (ix = 0; ix < 4; ix++)
+                    mm[iy][ix] = 0;
+
+            /* calc 4x4 sub-matrix */
+            for (i = 0; i < n; i++) {
+                int v0, v1, v2, v3;
+
+                v0 = a[n*(y+0) + i];
+                v1 = a[n*(y+1) + i];
+                v2 = a[n*(y+2) + i];
+                v3 = a[n*(y+3) + i];
+
+                mm[0][0] += v0 * b[n*i + x+0];
+                mm[0][1] += v0 * b[n*i + x+1];
+                mm[0][2] += v0 * b[n*i + x+2];
+                mm[0][3] += v0 * b[n*i + x+3];
+
+                mm[1][0] += v1 * b[n*i + x+0];
+                mm[1][1] += v1 * b[n*i + x+1];
+                mm[1][2] += v1 * b[n*i + x+2];
+                mm[1][3] += v1 * b[n*i + x+3];
+
+                mm[2][0] += v2 * b[n*i + x+0];
+                mm[2][1] += v2 * b[n*i + x+1];
+                mm[2][2] += v2 * b[n*i + x+2];
+                mm[2][3] += v2 * b[n*i + x+3];
+
+                mm[3][0] += v3 * b[n*i + x+0];
+                mm[3][1] += v3 * b[n*i + x+1];
+                mm[3][2] += v3 * b[n*i + x+2];
+                mm[3][3] += v3 * b[n*i + x+3];
+
+/* *** test code ***
+                for (iy = 0; iy < 4; iy++)
+                    for (ix = 0; ix < 4; ix++)
+                        mm[iy][ix] +=
+                            a[n*(y+iy) + i] * b[n*i + x+ix];
+*/
+            }
+
+            /* write temporary sub-matrix to main-matrix */
+            for (iy = 0; iy < 4; iy++)
+                for (ix = 0; ix < 4; ix++)
+                    c[n*(y+iy) + (x+ix)] = mm[iy][ix];
+        }
+    }
+
+/* ** test code **
+    for(y = 0; y < n; y++) {
+        for(x = 0; x < n; x++) {
+            int s = 0;
+            for(i = 0; i < n; i++)
+                s += a[n*y+i] * b[n*i+x];
+            c[n*y+x] = s;
+        }
+    }
+*/
+
+#elif USE_SIMD == 1
+
+    static int mm[4][4];     /* 4x4 sub-matrix */
+    for(y = 0; y < n; y += 4) {
+        for(x = 0; x < n; x += 4) {
+            /* clear temporary sub-matrix */
+            mm[0][0] = mm[0][1] = mm[0][2] = mm[0][3] = 0;
+            mm[1][0] = mm[1][1] = mm[1][2] = mm[1][3] = 0;
+            mm[2][0] = mm[2][1] = mm[2][2] = mm[2][3] = 0;
+            mm[3][0] = mm[3][1] = mm[3][2] = mm[3][3] = 0;
+
+            /* calc 4x4 sub-matrix */
+            for (i = 0; i < n; i++) {
+                int v0, v1, v2, v3;
+                int u0, u1, u2, u3;
+
+                v0 = a[n*(y+0) + i];
+                v1 = a[n*(y+1) + i];
+                v2 = a[n*(y+2) + i];
+                v3 = a[n*(y+3) + i];
+
+                /* v0=a[y][i], v1=a[y+1][i], v2=a[y+2][i], v3=a[y+3][i] */
+
+                /* load b[i..i+3][x] onto SPR[1] */
+                asm volatile (".set    noat\n\t"
+                              "lq      $1,(%0)\n\t"
+                              ".set    at\n"
+                              : : "r" (&b[n*i + x]));
+
+                /* extract four words from SPR[1] */
+                asm volatile (".set    noat\n\t"
+                              "nop\n\t"
+                              "nop\n\t"
+//                              "nop\n\t"
+                              "pextw   %0,$1,0\n\t"
+                              "pextw   %1,$1,1\n\t"
+                              "pextw   %2,$1,2\n\t"
+                              "pextw   %3,$1,3\n\t"
+                              ".set    at\n\t"
+                              : "=r" (u0), "=r" (u1), "=r" (u2), "=r" (u3) :);
+
+                /* u0=b[i][x], u1=b[i+1][x], u2=b[i+2][x], u3=b[i+3][x] */
+                /* little-endian is assumed */
+
+                mm[0][0] += v0 * u0;
+                mm[0][1] += v0 * u1;
+                mm[0][2] += v0 * u2;
+                mm[0][3] += v0 * u3;
+
+                mm[1][0] += v1 * u0;
+                mm[1][1] += v1 * u1;
+                mm[1][2] += v1 * u2;
+                mm[1][3] += v1 * u3;
+
+                mm[2][0] += v2 * u0;
+                mm[2][1] += v2 * u1;
+                mm[2][2] += v2 * u2;
+                mm[2][3] += v2 * u3;
+
+                mm[3][0] += v3 * u0;
+                mm[3][1] += v3 * u1;
+                mm[3][2] += v3 * u2;
+                mm[3][3] += v3 * u3;
+            }
+
+            /* write temporary sub-matrix to main-matrix */
+            asm volatile (".set    noat\n\t"
+                          "pinsw   $3,$0,%0,0\n\t"
+                          "pinsw   $4,$0,%1,0\n\t"
+                          "pinsw   $5,$0,%2,0\n\t"
+                          "pinsw   $6,$0,%3,0\n\t"
+
+                          "pinsw   $3,$3,%4,1\n\t"
+                          "pinsw   $4,$4,%5,1\n\t"
+                          "pinsw   $5,$5,%6,1\n\t"
+                          "pinsw   $6,$6,%7,1\n\t"
+
+                          "pinsw   $3,$3,%8,2\n\t"
+                          "pinsw   $4,$4,%9,2\n\t"
+                          "pinsw   $5,$5,%10,2\n\t"
+                          "pinsw   $6,$6,%11,2\n\t"
+
+                          "pinsw   $3,$3,%12,3\n\t"
+                          "pinsw   $4,$4,%13,3\n\t"
+                          "pinsw   $5,$5,%14,3\n\t"
+                          "pinsw   $6,$6,%15,3\n\t"
+                          :
+                          : "r" (mm[0][0]), "r" (mm[1][0]), "r" (mm[2][0]), "r" (mm[3][0]),
+                            "r" (mm[0][1]), "r" (mm[1][1]), "r" (mm[2][1]), "r" (mm[3][1]),
+                            "r" (mm[0][2]), "r" (mm[1][2]), "r" (mm[2][2]), "r" (mm[3][2]),
+                            "r" (mm[0][3]), "r" (mm[1][3]), "r" (mm[2][3]), "r" (mm[3][3]) );
+
+            asm volatile (".set    noat\n\t"
+                          "nop\n\t"
+                          "sq      $3,(%0)\n\t"
+                          "sq      $4,(%1)\n\t"
+                          "sq      $5,(%2)\n\t"
+                          "sq      $6,(%3)\n\t"
+                          ".set    at\n"
+                          : 
+                          : "r" (&c[n*y + x]),      "r" (&c[n*(y+1) + x]),
+                            "r" (&c[n*(y+2) + x]),  "r" (&c[n*(y+3) + x]) );
+        }
+    }
+
+#else
+# error "illegal USE_SIMD setting"
+#endif
+
+#else   /* not-defined USE_SIMD */
+    /* original code */
+    for(y = 0; y < n; y++) {
+        for(x = 0; x < n; x++) {
+            for(i = 0; i < n; i++) {
+                c[n*y+x] += a[n*y+i] * b[n*i+x];
+            }
+        }
+    }
+#endif
+
+    /* -----  show result ----- */
+    mylib_display_newline();
+
+#ifdef  USE_SIMD
+
+#if USE_SIMD == 0
+
+    for(y = n-8; y<n; y++) {
+        int v0, v1, v2, v3, v4, v5, v6, v7;
+        int *p = &c[n*y + n-8];
+
+        v0 = *(p + 0);
+        v1 = *(p + 1);
+        v2 = *(p + 2);
+        v3 = *(p + 3);
+
+        v4 = *(p + 4);
+        v5 = *(p + 5);
+        v6 = *(p + 6);
+        v7 = *(p + 7);
+
+        mylib_display_hex(v0);
+        mylib_display_char(' ');
+        mylib_display_hex(v1);
+        mylib_display_char(' ');
+        mylib_display_hex(v2);
+        mylib_display_char(' ');
+        mylib_display_hex(v3);
+        mylib_display_char(' ');
+        mylib_display_hex(v4);
+        mylib_display_char(' ');
+        mylib_display_hex(v5);
+        mylib_display_char(' ');
+        mylib_display_hex(v6);
+        mylib_display_char(' ');
+        mylib_display_hex(v7);
+        mylib_display_char(' ');
+
+        mylib_display_newline();
+    }
+
+#elif USE_SIMD == 1
+
+    for(y = n-8; y<n; y++) {
+        int v0, v1, v2, v3, v4, v5, v6, v7;
+        int *p = &c[n*y + n-8];
+
+        /* load two quadwords onto SPR[1] and SPR[2] */
+        asm volatile (".set    noat\n\t"
+                      "lq      $1,(%0)\n\t"
+                      "lq      $2,16(%0)\n\t"
+                      ".set    at\n"
+                      : : "r" (p));
+
+        asm volatile (".set    noat\n\t"
+                      "nop\n\t"
+                      "nop\n\t"
+                      /* read from first qword */
+                      "pextw   %0,$1,0\n\t"
+                      "pextw   %1,$1,1\n\t"
+                      "pextw   %2,$1,2\n\t"
+                      "pextw   %3,$1,3\n\t"
+                      /* read from second qword */
+                      "pextw   %4,$2,0\n\t"
+                      "pextw   %5,$2,1\n\t"
+                      "pextw   %6,$2,2\n\t"
+                      "pextw   %7,$2,3\n\t"
+                      ".set    at\n\t"
+                      : "=r" (v0), "=r" (v1), "=r" (v2), "=r" (v3),
+                        "=r" (v4), "=r" (v5), "=r" (v6), "=r" (v7) :);
+
+        mylib_display_hex(v0);
+        mylib_display_char(' ');
+        mylib_display_hex(v1);
+        mylib_display_char(' ');
+        mylib_display_hex(v2);
+        mylib_display_char(' ');
+        mylib_display_hex(v3);
+        mylib_display_char(' ');
+        mylib_display_hex(v4);
+        mylib_display_char(' ');
+        mylib_display_hex(v5);
+        mylib_display_char(' ');
+        mylib_display_hex(v6);
+        mylib_display_char(' ');
+        mylib_display_hex(v7);
+        mylib_display_char(' ');
+
+        mylib_display_newline();
+    }
+
+#else
+# error "illegal USE_SIMD setting"
+#endif
+
+#else   /* not-defined USE_SIMD */
+    /* original code */
+    for(y = n-8; y<n; y++) {
+        for(x = n-8; x<n; x++) {
+            mylib_display_hex(c[n*y+x]);
+            mylib_display_char(' ');
+        }
+        mylib_display_newline();
+    }
+#endif
+
+#ifdef  USE_SIMD
+
+#if USE_SIMD == 0
+    int sum = 0;
+    int s0, s1, s2, s3;
+
+    s0 = 0;
+    s1 = 0;
+    s2 = 0;
+    s3 = 0;
+
+    for (i = 0; i < n*n; i += 4) {
+        s0 += c[i+0];
+        s1 += c[i+1];
+        s2 += c[i+2];
+        s3 += c[i+3];
+    }
+
+    sum = s0 + s1 + s2 + s3;
+
+    mylib_display_hex(sum); // check sum
+
+#elif   USE_SIMD == 1
+
+    int sum = 0;
+    int s0, s1, s2, s3;
+
+    s0 = 0;
+    s1 = 0;
+    s2 = 0;
+    s3 = 0;
+
+    for (i = 0; i < n*n; i += 4) {
+        int v0, v1, v2, v3;
+
+        /* load one quadword onto SPR[1] */
+        asm volatile (".set    noat\n\t"
+                      "lq      $1,(%0)\n\t"
+                      ".set    at\n"
+                      : : "r" (&c[i]));
+
+        asm volatile (".set    noat\n\t"
+                      "nop\n\t"
+                      "nop\n\t"
+                      "nop\n\t"
+                      "pextw   %0,$1,0\n\t"
+                      "pextw   %1,$1,1\n\t"
+                      "pextw   %2,$1,2\n\t"
+                      "pextw   %3,$1,3\n\t"
+                      ".set    at\n\t"
+                      : "=r" (v0), "=r" (v1), "=r" (v2), "=r" (v3) :);
+
+        s0 += v0;
+        s1 += v1;
+        s2 += v2;
+        s3 += v3;
+    }
+
+    sum = s0 + s1 + s2 + s3;
+
+    mylib_display_hex(sum); // check sum
+
+#else
+# error "illegal USE_SIMD setting"
+#endif
+
+#else   /* not-defined USE_SIMD */
+    /* original code */
+    int sum = 0;
+    for(y = 0; y < n; y++) {
+        for(x = 0; x < n; x++) {
+            sum += c[n*y+x];
+        }
+    }
+    mylib_display_hex(sum); // check sum
+#endif
+    
+    mylib_display_newline();
+
+    mylib_finalize();
+    return 0;
+}
+/**********************************************************************/
